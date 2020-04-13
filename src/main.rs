@@ -6,14 +6,20 @@ use std::{
     ops::{BitAnd, BitOr},
 };
 
-#[derive(Debug, Clone)]
-struct Index {
+/// a compact index
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Index {
+    /// the strings table
     strings: BTreeSet<String>,
+    /// indices in these sets are guaranteed to correspond to strings in the strings table
     elements: Vec<BTreeSet<u32>>,
 }
 
 impl Serialize for Index {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        // serialize as a tuple so it is guaranteed that the strings table is before the indices,
+        // in case we ever want to write a clever visitor that matches without building an AST
+        // of the deserialized result.
         (&self.strings, &self.elements).serialize(serializer)
     }
 }
@@ -37,7 +43,8 @@ impl<'de> Deserialize<'de> for Index {
 }
 
 impl Index {
-    fn matching(&self, query: Dnf) -> Vec<usize> {
+    /// given a query expression in Dnf form, returns all matching indices
+    pub fn matching(&self, query: Dnf) -> Vec<usize> {
         // lookup all strings and translate them into indices.
         // if a single index does not match, the query can not match at all.
         fn lookup(s: &BTreeSet<String>, t: &BTreeMap<&str, u32>) -> Option<BTreeSet<u32>> {
@@ -58,7 +65,7 @@ impl Index {
             .iter()
             .filter_map(|s| lookup(s, &strings))
             .collect::<Vec<_>>();
-        // not a single query can possibly match
+        // not a single query can possibly match, no need to iterate.
         if query.is_empty() {
             return Vec::new();
         }
@@ -76,7 +83,7 @@ impl Index {
             .collect()
     }
 
-    fn as_elements<'a>(&'a self) -> Vec<BTreeSet<&'a str>> {
+    pub fn as_elements<'a>(&'a self) -> Vec<BTreeSet<&'a str>> {
         let strings = self.strings.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
         let elements = self
             .elements
@@ -90,7 +97,7 @@ impl Index {
         elements
     }
 
-    fn from_elements(e: &Vec<BTreeSet<String>>) -> Index {
+    pub fn from_elements(e: &Vec<BTreeSet<&str>>) -> Index {
         let mut strings = BTreeSet::new();
         for a in e.iter() {
             strings.extend(a.iter().cloned());
@@ -105,12 +112,18 @@ impl Index {
             .iter()
             .map(|a| a.iter().map(|e| indices[e]).collect::<BTreeSet<u32>>())
             .collect::<Vec<_>>();
+        let strings = strings.into_iter().map(|x| x.to_owned()).collect();
         Index { strings, elements }
     }
 }
 
+/// a boolean expression, consisting of literals, union and intersection.
+///
+/// no attempt of simplification is made, except flattening identical operators.
+///
+/// `And([And([a,b]),c])` will be flattened to `And([a,b,c])`.
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
-enum Expression {
+pub enum Expression {
     Literal(String),
     And(Vec<Expression>),
     Or(Vec<Expression>),
@@ -137,15 +150,21 @@ impl std::fmt::Display for Expression {
     }
 }
 
+/// Disjunctive normal form of a boolean query expression
+///
+/// https://en.wikipedia.org/wiki/Disjunctive_normal_form
+///
+/// This is an unique represenation of a query using literals, union and intersection.
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
-struct Dnf(BTreeSet<BTreeSet<String>>);
+pub struct Dnf(BTreeSet<BTreeSet<String>>);
 
 impl Dnf {
     fn literal(text: String) -> Self {
         Self(btreeset![btreeset![text]])
     }
 
-    fn expression(self) -> Expression {
+    /// converts the disjunctive normal form back to an expression
+    pub fn expression(self) -> Expression {
         self.0
             .into_iter()
             .map(Dnf::and_expr)
@@ -230,6 +249,18 @@ fn insert_unless_redundant(aa: &mut BTreeSet<BTreeSet<String>>, b: BTreeSet<Stri
     aa.insert(b);
 }
 
+impl From<Expression> for Dnf {
+    fn from(value: Expression) -> Self {
+        value.dnf()
+    }
+}
+
+impl From<Dnf> for Expression {
+    fn from(value: Dnf) -> Self {
+        value.expression()
+    }
+}
+
 impl BitAnd for Dnf {
     type Output = Dnf;
     fn bitand(self, that: Self) -> Self {
@@ -260,52 +291,137 @@ impl BitOr for Dnf {
 fn l(x: &str) -> Expression {
     Expression::literal(x.into())
 }
-fn main() {
-    {
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use quickcheck::{quickcheck, Arbitrary, Gen};
+
+    #[test]
+    fn test_dnf_intersection_1() {
+        let a = l("a");
+        let b = l("b");
+        let c = l("c");
+        let expr = (a | b) & c;
+        let c = expr.dnf().expression().to_string();
+        assert_eq!(c, "a&c|b&c");
+    }
+
+    #[test]
+    fn test_dnf_intersection_2() {
         let a = l("a");
         let b = l("b");
         let c = l("c");
         let d = l("d");
         let expr = (a | b) & (c | d);
-        println!("{}", expr);
-        let dnf = expr.dnf();
-        println!("{:?} {}", dnf.clone(), dnf.expression());
+        let c = expr.dnf().expression().to_string();
+        assert_eq!(c, "a&c|a&d|b&c|b&d");
     }
 
-    {
-        let a = l("a");
-        let b = l("b");
-        let c = l("c");
-        let expr = (a | b) & c;
-        println!("{}", expr);
-        let dnf = expr.dnf();
-        println!("{:?} {}", dnf.clone(), dnf.expression());
-    }
-
-    {
+    #[test]
+    fn test_dnf_simplify_1() {
         let a = l("a");
         let b = l("b");
         let expr = (a.clone() | b) & a;
-        println!("{}", expr);
-        let dnf = expr.dnf();
-        println!("{:?} {}", dnf.clone(), dnf.expression());
+        let c = expr.dnf().expression().to_string();
+        assert_eq!(c, "a");
     }
 
-    {
+    #[test]
+    fn test_dnf_simplify_2() {
         let a = l("a");
         let b = l("b");
         let expr = (a.clone() & b) | a;
-        println!("{}", expr);
-        let dnf = expr.dnf();
-        println!("{:?} {}", dnf.clone(), dnf.expression());
+        let c = expr.dnf().expression().to_string();
+        assert_eq!(c, "a");
     }
 
-    {
+    #[test]
+    fn test_dnf_simplify_3() {
         let a = l("a");
         let b = l("b");
         let expr = (a.clone() | b) | a;
-        println!("{}", expr);
-        let dnf = expr.dnf();
-        println!("{:?} {}", dnf.clone(), dnf.expression());
+        let c = expr.dnf().expression().to_string();
+        assert_eq!(c, "a|b");
     }
+
+    #[test]
+    fn test_matching_1() {
+        let index = Index::from_elements(&vec![
+            btreeset! {"a"},
+            btreeset! {"a", "b"},
+            btreeset! {"a"},
+            btreeset! {"a", "b"},
+        ]);
+        let expr = l("a") | l("b");
+        assert_eq!(index.matching(expr.dnf()), vec![0,1,2,3]);
+        let expr = l("a") & l("b");
+        assert_eq!(index.matching(expr.dnf()), vec![1,3]);
+        let expr = l("c") & l("d");
+        assert!(index.matching(expr.dnf()).is_empty());
+    }
+
+    #[test]
+    fn test_matching_2() {
+        let index = Index::from_elements(&vec![
+            btreeset! {"a", "b"},
+            btreeset! {"b", "c"},
+            btreeset! {"c", "a"},
+            btreeset! {"a", "b"},
+        ]);
+        let expr = l("a") | l("b") | l("c");
+        assert_eq!(index.matching(expr.dnf()), vec![0,1,2,3]);
+        let expr = l("a") & l("b");
+        assert_eq!(index.matching(expr.dnf()), vec![0,3]);
+        let expr = l("a") & l("b") & l("c");
+        assert!(index.matching(expr.dnf()).is_empty());
+    }
+
+    #[test]
+    fn test_deser_error() {
+        // negative index - serde should catch this
+        let e1 = r#"[["a","b"],[[0],[0,1],[0],[0,-1]]]"#;
+        let x: std::result::Result<Index,_> = serde_json::from_str(e1);
+        assert!(x.is_err());
+
+        // index too large - we must catch this in order to uphold the invariants of the index
+        let e1 = r#"[["a","b"],[[0],[0,1],[0],[0,2]]]"#;
+        let x: std::result::Result<Index,_> = serde_json::from_str(e1);
+        assert!(x.is_err());
+    }
+
+    impl Arbitrary for Index {
+
+        fn arbitrary<G: Gen>(g: &mut G) -> Self {
+            let xs: Vec<BTreeSet<String>> = Arbitrary::arbitrary(g);
+            let xs = xs.iter().map(|e| e.iter().map(|x| x.as_ref()).collect()).collect();
+            Index::from_elements(&xs)
+        }
+    }
+
+    quickcheck! {
+        fn serde_json_roundtrip(index: Index) -> bool {
+            let json = serde_json::to_string(&index).unwrap();
+            let index2: Index = serde_json::from_str(&json).unwrap();
+            index == index2
+        }
+    }
+}
+
+fn main() {
+    let index = Index::from_elements(&vec![
+        btreeset! {"a"},
+        btreeset! {"a", "b"},
+        btreeset! {"a"},
+        btreeset! {"a", "b"},
+    ]);
+    let text = serde_json::to_string(&index).unwrap();
+    println!("{:?}", index);
+    println!("{}", text);
+    let expr = l("a") | l("b");
+    println!("{:?}", index.matching(expr.dnf()));
+    let expr = l("a") & l("b");
+    println!("{:?}", index.matching(expr.dnf()));
+    let expr = l("c") & l("d");
+    println!("{:?}", index.matching(expr.dnf()));
 }
