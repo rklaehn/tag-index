@@ -1,6 +1,6 @@
 use maplit::btreeset;
 use reduce::Reduce;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::{BitAnd, BitOr},
@@ -128,6 +128,7 @@ pub enum Expression {
     Or(Vec<Expression>),
 }
 
+/// prints the expression with a minimum of brackets
 impl std::fmt::Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         fn child_to_string(x: &Expression) -> String {
@@ -206,6 +207,10 @@ impl Expression {
         )
     }
 
+    /// convert the expression into disjunctive normal form
+    ///
+    /// careful, for some expressions this can have exponential runtime. E.g. the disjunctive normal form
+    /// of `(a | b) & (c | d) & (e | f) & ...` will be very complex.
     pub fn dnf(self) -> Dnf {
         match self {
             Expression::Literal(x) => Dnf::literal(x),
@@ -420,7 +425,45 @@ mod tests {
     }
 }
 
+fn compresss_zstd_cbor<T: Serialize>(value: &T) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let cbor = serde_cbor::to_vec(&value)?;
+    let mut compressed: Vec<u8> = Vec::new();
+    zstd::stream::copy_encode(std::io::Cursor::new(cbor), &mut compressed, 10)?;
+    Ok(compressed)
+}
+
+fn decompress_zstd_cbor<T: DeserializeOwned>(compressed: &[u8]) -> std::result::Result<T, Box<dyn std::error::Error>> {
+    let mut decompressed: Vec<u8> = Vec::new();
+    zstd::stream::copy_decode(compressed, &mut decompressed)?;
+    Ok(serde_cbor::from_slice(&decompressed)?)
+}
+
+fn borrow_inner(elements: &[BTreeSet<String>]) -> Vec<BTreeSet<&str>> {
+    elements.iter().map(|x| x.iter().map(|e| e.as_ref()).collect()).collect()
+}
+
 fn main() {
+    let strings = (0..5000).map(|i| {
+        let fizz = i % 3 == 0;
+        let buzz = i % 5 == 0;
+        if fizz && buzz {
+            btreeset!{"fizzbuzz".to_owned(), "com.somecompany.somenamespace.someapp.sometype".to_owned()}
+        } else if fizz {
+            btreeset!{"fizz".to_owned(), "org.schema.registry.someothertype".to_owned()}
+        } else if buzz {
+            btreeset!{"buzz".to_owned(), "factory.provider.interface.adapter".to_owned()}
+        } else {
+            btreeset!{format!("{}", i % 11), "we.like.long.identifiers.because.they.seem.professional".to_owned()}
+        }
+    }).collect::<Vec<_>>();
+    let large = Index::from_elements(&borrow_inner(&strings));
+    let compressed = compresss_zstd_cbor(&large).unwrap();
+    let large1: Index = decompress_zstd_cbor(&compressed).unwrap();
+    assert_eq!(large, large1);
+    println!("naive cbor {}", serde_cbor::to_vec(&strings).unwrap().len());
+    println!("index cbor {}", serde_cbor::to_vec(&large).unwrap().len());
+    println!("compressed {}", compressed.len());
+
     let index = Index::from_elements(&[
         btreeset! {"a"},
         btreeset! {"a", "b"},
