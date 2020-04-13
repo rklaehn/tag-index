@@ -227,6 +227,7 @@ version = "0.1.0"
 dependencies = [
  "maplit",
  "quickcheck",
+ "rand",
  "reduce",
  "serde",
  "serde_cbor",

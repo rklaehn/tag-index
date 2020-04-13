@@ -296,13 +296,14 @@ fn l(x: &str) -> Expression {
 mod tests {
     use super::*;
     use quickcheck::{quickcheck, Arbitrary, Gen};
+    use rand::seq::SliceRandom;
 
     #[test]
     fn test_dnf_intersection_1() {
         let a = l("a");
         let b = l("b");
         let c = l("c");
-        let expr = (a | b) & c;
+        let expr = c & (a | b);
         let c = expr.dnf().expression().to_string();
         assert_eq!(c, "a&c|b&c");
     }
@@ -313,7 +314,7 @@ mod tests {
         let b = l("b");
         let c = l("c");
         let d = l("d");
-        let expr = (a | b) & (c | d);
+        let expr = (d | c) & (b | a);
         let c = expr.dnf().expression().to_string();
         assert_eq!(c, "a&c|a&d|b&c|b&d");
     }
@@ -390,11 +391,23 @@ mod tests {
         assert!(x.is_err());
     }
 
+    const STRINGS: &'static [&'static str] = &["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+
+    #[derive(Clone, PartialOrd, Ord, PartialEq, Eq)]
+    struct IndexString(&'static str);
+
+    impl Arbitrary for IndexString {
+
+        fn arbitrary<G: Gen>(g: &mut G) -> Self {
+            IndexString(STRINGS.choose(g).unwrap())
+        }
+    }
+
     impl Arbitrary for Index {
 
         fn arbitrary<G: Gen>(g: &mut G) -> Self {
-            let xs: Vec<BTreeSet<String>> = Arbitrary::arbitrary(g);
-            let xs = xs.iter().map(|e| e.iter().map(|x| x.as_ref()).collect()).collect();
+            let xs: Vec<BTreeSet<IndexString>> = Arbitrary::arbitrary(g);
+            let xs = xs.iter().map(|e| e.iter().map(|x| x.0).collect()).collect();
             Index::from_elements(&xs)
         }
     }

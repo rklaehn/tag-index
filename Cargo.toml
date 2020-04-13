@@ -16,3 +16,4 @@ serde_json = "1.0.51"
 
 [dev-dependencies]
 quickcheck = "0.9.2"
+rand = "0.7.3"
