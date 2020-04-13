@@ -85,7 +85,7 @@ impl Index {
 
     pub fn as_elements<'a>(&'a self) -> Vec<BTreeSet<&'a str>> {
         let strings = self.strings.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
-        let elements = self
+        self
             .elements
             .iter()
             .map(|is| {
@@ -93,11 +93,10 @@ impl Index {
                     .map(|i| strings[*i as usize])
                     .collect::<BTreeSet<_>>()
             })
-            .collect::<Vec<_>>();
-        elements
+            .collect()
     }
 
-    pub fn from_elements(e: &Vec<BTreeSet<&str>>) -> Index {
+    pub fn from_elements(e: &[BTreeSet<&str>]) -> Index {
         let mut strings = BTreeSet::new();
         for a in e.iter() {
             strings.extend(a.iter().cloned());
@@ -407,7 +406,7 @@ mod tests {
 
         fn arbitrary<G: Gen>(g: &mut G) -> Self {
             let xs: Vec<BTreeSet<IndexString>> = Arbitrary::arbitrary(g);
-            let xs = xs.iter().map(|e| e.iter().map(|x| x.0).collect()).collect();
+            let xs: Vec<BTreeSet<&str>> = xs.iter().map(|e| e.iter().map(|x| x.0).collect()).collect();
             Index::from_elements(&xs)
         }
     }
@@ -422,7 +421,7 @@ mod tests {
 }
 
 fn main() {
-    let index = Index::from_elements(&vec![
+    let index = Index::from_elements(&[
         btreeset! {"a"},
         btreeset! {"a", "b"},
         btreeset! {"a"},
