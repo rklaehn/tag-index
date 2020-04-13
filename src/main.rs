@@ -1,38 +1,79 @@
 use maplit::btreeset;
 use reduce::Reduce;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::{
     collections::{BTreeMap, BTreeSet},
     ops::{BitAnd, BitOr},
 };
 
+#[derive(Debug, Clone)]
 struct Index {
     strings: BTreeSet<String>,
     elements: Vec<BTreeSet<u32>>,
 }
 
+impl Serialize for Index {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        (&self.strings, &self.elements).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Index {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        let (strings, elements) = <(Vec<String>, Vec<BTreeSet<u32>>)>::deserialize(deserializer)?;
+        // ensure valid indices
+        for s in elements.iter() {
+            for x in s {
+                if strings.get(*x as usize).is_none() {
+                    return Err(serde::de::Error::custom("invalid string index"));
+                }
+            }
+        }
+        Ok(Index {
+            strings: strings.into_iter().collect(),
+            elements,
+        })
+    }
+}
+
 impl Index {
-    fn indices(&self, query: Dnf) -> Vec<usize> {
+    fn matching(&self, query: Dnf) -> Vec<usize> {
+        // lookup all strings and translate them into indices.
+        // if a single index does not match, the query can not match at all.
         fn lookup(s: &BTreeSet<String>, t: &BTreeMap<&str, u32>) -> Option<BTreeSet<u32>> {
             s.iter()
-                .map(|x| t.get(&x.as_ref()).cloned().ok_or(()))
-                .collect::<std::result::Result<_, _>>()
-                .ok()
+                .map(|x| t.get(&x.as_ref()).cloned())
+                .collect::<Option<_>>()
         }
+        // mapping from strings to indices
         let strings = self
             .strings
             .iter()
             .enumerate()
             .map(|(i, s)| (s.as_ref(), i as u32))
             .collect::<BTreeMap<&str, u32>>();
-        let translated = query
+        // translate the query from strings to indices
+        let query = query
             .0
             .iter()
             .filter_map(|s| lookup(s, &strings))
-            .collect::<BTreeSet<_>>();
-        if translated.is_empty() {
+            .collect::<Vec<_>>();
+        // not a single query can possibly match
+        if query.is_empty() {
             return Vec::new();
         }
-        Vec::new()
+        // check the remaining queries
+        self.elements
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                if query.iter().any(|x| x.is_subset(e)) {
+                    Some(i)
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     fn as_elements<'a>(&'a self) -> Vec<BTreeSet<&'a str>> {
@@ -77,25 +118,22 @@ enum Expression {
 
 impl std::fmt::Display for Expression {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Expression::Literal(text) => write!(f, "{}", text),
-            Expression::And(es) => write!(
-                f,
-                "{}",
-                es.iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join("&")
-            ),
-            Expression::Or(es) => write!(
-                f,
-                "({})",
-                es.iter()
-                    .map(|x| x.to_string())
-                    .collect::<Vec<_>>()
-                    .join("|")
-            ),
+        fn child_to_string(x: &Expression) -> String {
+            if let Expression::Or(_) = x {
+                format!("({})", x)
+            } else {
+                x.to_string()
+            }
         }
+        write!(
+            f,
+            "{}",
+            match self {
+                Expression::Literal(text) => text.clone(),
+                Expression::And(es) => es.iter().map(child_to_string).collect::<Vec<_>>().join("&"),
+                Expression::Or(es) => es.iter().map(child_to_string).collect::<Vec<_>>().join("|"),
+            }
+        )
     }
 }
 
