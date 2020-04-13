@@ -1,11 +1,71 @@
 use maplit::btreeset;
 use reduce::Reduce;
-use std::collections::BTreeSet;
-use std::ops::{BitAnd, BitOr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::{BitAnd, BitOr},
+};
 
 struct Index {
-    strings: Vec<String>,
-    elements: Vec<Vec<u32>>,
+    strings: BTreeSet<String>,
+    elements: Vec<BTreeSet<u32>>,
+}
+
+impl Index {
+    fn indices(&self, query: Dnf) -> Vec<usize> {
+        fn lookup(s: &BTreeSet<String>, t: &BTreeMap<&str, u32>) -> Option<BTreeSet<u32>> {
+            s.iter()
+                .map(|x| t.get(&x.as_ref()).cloned().ok_or(()))
+                .collect::<std::result::Result<_, _>>()
+                .ok()
+        }
+        let strings = self
+            .strings
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.as_ref(), i as u32))
+            .collect::<BTreeMap<&str, u32>>();
+        let translated = query
+            .0
+            .iter()
+            .filter_map(|s| lookup(s, &strings))
+            .collect::<BTreeSet<_>>();
+        if translated.is_empty() {
+            return Vec::new();
+        }
+        Vec::new()
+    }
+
+    fn as_elements<'a>(&'a self) -> Vec<BTreeSet<&'a str>> {
+        let strings = self.strings.iter().map(|x| x.as_ref()).collect::<Vec<_>>();
+        let elements = self
+            .elements
+            .iter()
+            .map(|is| {
+                is.iter()
+                    .map(|i| strings[*i as usize])
+                    .collect::<BTreeSet<_>>()
+            })
+            .collect::<Vec<_>>();
+        elements
+    }
+
+    fn from_elements(e: &Vec<BTreeSet<String>>) -> Index {
+        let mut strings = BTreeSet::new();
+        for a in e.iter() {
+            strings.extend(a.iter().cloned());
+        }
+        let indices = strings
+            .iter()
+            .cloned()
+            .enumerate()
+            .map(|(i, e)| (e, i as u32))
+            .collect::<BTreeMap<_, _>>();
+        let elements = e
+            .iter()
+            .map(|a| a.iter().map(|e| indices[e]).collect::<BTreeSet<u32>>())
+            .collect::<Vec<_>>();
+        Index { strings, elements }
+    }
 }
 
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
@@ -22,12 +82,18 @@ impl std::fmt::Display for Expression {
             Expression::And(es) => write!(
                 f,
                 "{}",
-                es.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("&")
+                es.iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join("&")
             ),
             Expression::Or(es) => write!(
                 f,
                 "({})",
-                es.iter().map(|x| x.to_string()).collect::<Vec<_>>().join("|")
+                es.iter()
+                    .map(|x| x.to_string())
+                    .collect::<Vec<_>>()
+                    .join("|")
             ),
         }
     }
@@ -42,11 +108,18 @@ impl Dnf {
     }
 
     fn expression(self) -> Expression {
-        self.0.into_iter().map(Dnf::and_expr).reduce(Expression::bitor).unwrap()
+        self.0
+            .into_iter()
+            .map(Dnf::and_expr)
+            .reduce(Expression::bitor)
+            .unwrap()
     }
 
     fn and_expr(v: BTreeSet<String>) -> Expression {
-        v.into_iter().map(Expression::literal).reduce(Expression::bitand).unwrap()
+        v.into_iter()
+            .map(Expression::literal)
+            .reduce(Expression::bitand)
+            .unwrap()
     }
 }
 
@@ -100,36 +173,23 @@ impl BitAnd for Expression {
     }
 }
 
-impl BitOr for Dnf {
-    type Output = Dnf;
-    fn bitor(self, that: Self) -> Self {
-        let mut es = self.0;
-        es.extend(that.0);
-        Dnf(es)
-    }
-}
-
-fn insert_unless_redundant(
-    mut aa: BTreeSet<BTreeSet<String>>,
-    b: BTreeSet<String>,
-) -> BTreeSet<BTreeSet<String>> {
+fn insert_unless_redundant(aa: &mut BTreeSet<BTreeSet<String>>, b: BTreeSet<String>) {
     let mut to_remove = None;
     for a in aa.iter() {
         if a.is_subset(&b) {
             // a is larger than b. E.g. x | x&y
             // keep a, b is redundant
-            return aa;
+            return;
         } else if a.is_superset(&b) {
             // a is smaller than b, E.g. x&y | x
             // remove a, keep b
-            to_remove = Some(&b);
+            to_remove = Some(a.clone());
         }
     }
     if let Some(r) = to_remove {
-        aa.remove(r);
+        aa.remove(&r);
     }
     aa.insert(b);
-    aa
 }
 
 impl BitAnd for Dnf {
@@ -141,8 +201,19 @@ impl BitAnd for Dnf {
                 let mut r = BTreeSet::new();
                 r.extend(a.iter().cloned());
                 r.extend(b.iter().cloned());
-                rs = insert_unless_redundant(rs, r);
+                insert_unless_redundant(&mut rs, r);
             }
+        }
+        Dnf(rs)
+    }
+}
+
+impl BitOr for Dnf {
+    type Output = Dnf;
+    fn bitor(self, that: Self) -> Self {
+        let mut rs = self.0;
+        for b in that.0 {
+            insert_unless_redundant(&mut rs, b);
         }
         Dnf(rs)
     }
@@ -166,7 +237,26 @@ fn main() {
     {
         let a = l("a");
         let b = l("b");
+        let c = l("c");
+        let expr = (a | b) & c;
+        println!("{}", expr);
+        let dnf = expr.dnf();
+        println!("{:?} {}", dnf.clone(), dnf.expression());
+    }
+
+    {
+        let a = l("a");
+        let b = l("b");
         let expr = (a.clone() | b) & a;
+        println!("{}", expr);
+        let dnf = expr.dnf();
+        println!("{:?} {}", dnf.clone(), dnf.expression());
+    }
+
+    {
+        let a = l("a");
+        let b = l("b");
+        let expr = (a.clone() & b) | a;
         println!("{}", expr);
         let dnf = expr.dnf();
         println!("{:?} {}", dnf.clone(), dnf.expression());
