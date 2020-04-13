@@ -1,0 +1,13 @@
+[package]
+name = "tag-index"
+version = "0.1.0"
+authors = ["Ruediger Klaehn <rklaehn@protonmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+zstd = "0.5.1"
+serde_cbor = "0.11.1"
+reduce = "0.1.2"
+maplit = "1.0.2"
